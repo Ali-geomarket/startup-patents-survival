@@ -3,6 +3,7 @@ import re
 import time
 import unicodedata
 from urllib.parse import urljoin
+import argparse
 
 import pandas as pd
 import requests
@@ -18,17 +19,6 @@ HEADERS = {
 }
 
 BASE = "https://www.frenchcleantech.com/"
-
-# Paramètres de scraping (tu peux les changer plus tard)
-CATEGORY_SLUG = "energy-generation"
-CATEGORY_NAME = "Energy generation"
-MAX_PAGE = 19
-
-# Dossiers de sortie (dans le repo)
-DATA_RAW_DIR = os.path.join("data", "raw")
-PATH_RAW = os.path.join(DATA_RAW_DIR, f"frenchcleantech_{CATEGORY_SLUG}.csv")
-PATH_COMPANIES = os.path.join(DATA_RAW_DIR, f"frenchcleantech_{CATEGORY_SLUG}_companies.csv")
-
 
 LEGAL_FORMS = {
     "SAS", "SASU", "SARL", "SA", "SNC", "EURL", "GIE",
@@ -107,7 +97,7 @@ def normalize_company_name_v2(name: str) -> str:
     return " ".join(merged)
 
 
-def scrape_category(category_slug: str, category_name: str, max_page: int) -> pd.DataFrame:
+def scrape_category(category_slug: str, category_name: str, max_page: int, sleep_s: float = 0.6) -> pd.DataFrame:
     rows = []
 
     for page in range(1, max_page + 1):
@@ -148,16 +138,36 @@ def scrape_category(category_slug: str, category_name: str, max_page: int) -> pd
                 "list_page": page
             })
 
-        time.sleep(0.6)
+        time.sleep(sleep_s)
 
     df = pd.DataFrame(rows).drop_duplicates(subset=["startup_name", "detail_url"]).reset_index(drop=True)
     return df
 
 
 def main():
-    os.makedirs(DATA_RAW_DIR, exist_ok=True)
+    parser = argparse.ArgumentParser(description="Scrape FrenchCleantech companies by category.")
+    parser.add_argument("--category-slug", required=True,
+                        help="FrenchCleantech category slug (e.g. energy-generation).")
+    parser.add_argument("--category-name", default="",
+                        help="Human readable category name (optional).")
+    parser.add_argument("--max-page", type=int, default=1,
+                        help="Number of pages to scrape (default: 1).")
+    parser.add_argument("--sleep", type=float, default=0.6,
+                        help="Delay between pages in seconds (default: 0.6).")
+    parser.add_argument("--outdir", default=os.path.join("data", "raw"),
+                        help="Output directory (default: data/raw).")
 
-    df = scrape_category(CATEGORY_SLUG, CATEGORY_NAME, MAX_PAGE)
+    args = parser.parse_args()
+
+    os.makedirs(args.outdir, exist_ok=True)
+
+    # Fichiers de sortie (dépendent du slug => doivent être construits ici)
+    path_raw = os.path.join(args.outdir, f"frenchcleantech_{args.category_slug}.csv")
+    path_companies = os.path.join(args.outdir, f"frenchcleantech_{args.category_slug}_companies.csv")
+
+    category_name = args.category_name.strip() or args.category_slug
+
+    df = scrape_category(args.category_slug, category_name, args.max_page, sleep_s=args.sleep)
     print("Scraping terminé | Nb lignes (avant dédup entreprise):", len(df))
 
     df["name_clean"] = df["startup_name"].apply(normalize_company_name)
@@ -172,11 +182,11 @@ def main():
     print("Nb entreprises uniques:", len(df_companies))
     print("Doublons restants (doit être 0):", df_companies["name_clean_v2"].duplicated().sum())
 
-    df.to_csv(PATH_RAW, index=False, encoding="utf-8-sig")
-    df_companies.to_csv(PATH_COMPANIES, index=False, encoding="utf-8-sig")
+    df.to_csv(path_raw, index=False, encoding="utf-8-sig")
+    df_companies.to_csv(path_companies, index=False, encoding="utf-8-sig")
 
-    print("RAW sauvegardé:", PATH_RAW)
-    print("COMPANIES sauvegardé:", PATH_COMPANIES)
+    print("RAW sauvegardé:", path_raw)
+    print("COMPANIES sauvegardé:", path_companies)
 
 
 if __name__ == "__main__":
