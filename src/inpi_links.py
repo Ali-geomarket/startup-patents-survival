@@ -10,7 +10,7 @@ INPI_BASE_URL = "https://data.inpi.fr/search"
 
 def build_inpi_link(company_name: str) -> str:
     """
-    Build a robust INPI search URL from a company name.
+    Construit une URL de recherche INPI à partir du nom d'une entreprise.
     """
     if not isinstance(company_name, str) or not company_name.strip():
         return ""
@@ -19,31 +19,35 @@ def build_inpi_link(company_name: str) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Generate INPI search links for companies.")
+    parser = argparse.ArgumentParser(
+        description="Génère des liens de recherche INPI à partir de la colonne startup_name."
+    )
     parser.add_argument(
         "--input",
         required=True,
-        help="Path to input CSV containing startup_name column."
+        help="Chemin du CSV en entrée (doit contenir la colonne startup_name).",
     )
     parser.add_argument(
         "--output",
         required=True,
-        help="Path to output CSV with INPI links."
+        help="Chemin du CSV en sortie (avec la colonne inpi_search_url).",
     )
-
     args = parser.parse_args()
 
     df = pd.read_csv(args.input)
 
     if "startup_name" not in df.columns:
-        raise ValueError("Input CSV must contain a 'startup_name' column.")
+        raise ValueError("Le CSV en entrée doit contenir une colonne 'startup_name'.")
 
     df["inpi_search_url"] = df["startup_name"].apply(build_inpi_link)
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    out_dir = os.path.dirname(args.output)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
     df.to_csv(args.output, index=False, encoding="utf-8-sig")
 
-    print("INPI links generated")
+    print("Liens INPI générés")
     print("Input :", args.input)
     print("Output:", args.output)
 
