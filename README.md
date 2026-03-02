@@ -1,55 +1,26 @@
-# Startup patents and survival
+Les commandes Anaconda Prompt :
 
-This project studies whether the ownership of patent portfolios influences the survival of startups.
+cd chemin
+→ tu te places dans le dossier du projet pour exécuter les scripts.
 
-The analysis focuses on French startups and uses patent data from public patent databases (INPI / Patstat).
-The objective is to assess the relationship between patent activity and startup survival using econometric models.
+python src\scrape_frenchcleantech_all.py --max-page 0 --sleep 0.6
+→ scrape toutes les entreprises du site FrenchCleantech (pages) et génère un CSV brut dans data/raw/.
 
-This repository contains data collection, name-matching algorithms, feature construction, and econometric analysis.
+python -c "import pandas as pd; df=pd.read_csv('data/raw/frenchcleantech_all_companies.csv'); print(df.shape); print(df.columns.tolist()); print(df.head(3))"
+→ vérifie rapidement (shape / colonnes / premières lignes) que le scraping a bien produit un fichier cohérent.
 
+python src\build_master_dataset.py
+→ nettoie/structure la base brute pour créer un master prêt à enrichissement.
 
-## Project structure
+python src\lookup_siren.py --input data\processed\frenchcleantech_master.csv --output data\processed\frenchcleantech_master_siren.csv --sleep 0.3 --limit 5
+→ pour chaque startup, interroge l’API publique recherche-entreprises.api.gouv.fr pour retrouver un SIREN (clé pivot entreprise).
 
+python src\inpi_rne_survival.py --input data\processed\frenchcleantech_master_siren.csv --output data\processed\frenchcleantech_master_rne.csv
+→ pour chaque SIREN trouvé, interroge INPI/RNE pour récupérer des infos admin (statut, création, cessation) et dériver la variable survival.
 
-startup-patents-survival/
-├── src/            # Python scripts
-├── data/
-│   ├── raw/        # Raw data (ignored by git)
-│   └── processed/  # Processed data (ignored by git)
-├── notebooks/      # Exploration notebooks
-├── requirements.txt
-└── README.md
+python src\inpi_pi_patents_portfolio.py --input data\processed\frenchcleantech_master_rne.csv --output data\processed\frenchcleantech_master_rne_patents.csv --sleep 2.0 --checkpoint-every 25 --resume
+→ pour chaque SIREN, interroge INPI PI pour récupérer patents_total, en sauvegardant régulièrement et en pouvant reprendre après quota/erreur.
 
+python src\build_final_dataset.py
+→ fusion finale (master_rne + patents checkpoint), nettoyage des colonnes, calcul has_patent, création patents_status, export final dans data/raw/.
 
-## Installation
-
-This project uses Python 3.
-
-Install the required Python packages with:
-
-pip install -r requirements.txt
-
-
-## Usage
-
-### Scrape FrenchCleantech companies by category
-
-The main scraping script is `scrape_frenchcleantech.py`.
-
-Example command: python src/scrape_frenchcleantech.py --category-slug energy-generation --max-page 5
-
-
-This command:
-
-* scrapes companies from the selected FrenchCleantech category,
-* normalizes company names,
-* saves the results into the `data/raw/` directory.
-
-Two CSV files are generated:
-
-* `frenchcleantech_<category>.csv`
-* `frenchcleantech_<category>_companies.csv`
-
-## Data management
-
-Raw and processed data files are intentionally excluded from version control and must be generated locally.
