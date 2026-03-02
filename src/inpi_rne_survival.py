@@ -15,11 +15,13 @@ BASE_RNE = "https://registre-national-entreprises.inpi.fr"
 LOGIN_URL = f"{BASE_RNE}/api/sso/login"
 COMPANY_URL = f"{BASE_RNE}/api/companies/{{siren}}"
 
-
 SIREN_RE = re.compile(r"^\d{9}$")
 
 
 def pick_env(*names: str) -> Optional[str]:
+    """
+    Retourne la première variable d'environnement non vide parmi celles fournies.
+    """
     for n in names:
         v = os.getenv(n)
         if v and str(v).strip():
@@ -28,6 +30,9 @@ def pick_env(*names: str) -> Optional[str]:
 
 
 def get_in(d: Any, path: List[str]) -> Any:
+    """
+    Accès sécurisé à un dictionnaire imbriqué.
+    """
     cur = d
     for p in path:
         if not isinstance(cur, dict):
@@ -37,6 +42,9 @@ def get_in(d: Any, path: List[str]) -> Any:
 
 
 def first_non_empty(*vals):
+    """
+    Retourne la première valeur non vide.
+    """
     for v in vals:
         if v is None:
             continue
@@ -47,7 +55,9 @@ def first_non_empty(*vals):
 
 
 def parse_date_loose(s: Optional[str]) -> Optional[str]:
-    """RNE dates: often YYYY-MM-DD, sometimes YYYY-MM. Keep as-is if parses."""
+    """
+    Valide grossièrement un format de date RNE (YYYY-MM-DD ou YYYY-MM) et renvoie la chaîne.
+    """
     if not s or not isinstance(s, str):
         return None
     s = s.strip()
@@ -57,10 +67,13 @@ def parse_date_loose(s: Optional[str]) -> Optional[str]:
             return s
         except ValueError:
             pass
-    return s  # fallback
+    return s
 
 
 def login_get_token(session: requests.Session, username: str, password: str) -> str:
+    """
+    Login RNE et récupération du token.
+    """
     r = session.post(LOGIN_URL, json={"username": username, "password": password}, timeout=30)
     r.raise_for_status()
     data = r.json()
@@ -71,6 +84,9 @@ def login_get_token(session: requests.Session, username: str, password: str) -> 
 
 
 def fetch_company_json(session: requests.Session, token: str, siren: str, timeout: int = 30) -> Dict[str, Any]:
+    """
+    Récupère le JSON RNE pour un SIREN.
+    """
     headers = {"Authorization": f"Bearer {token}"}
     url = COMPANY_URL.format(siren=siren)
     r = session.get(url, headers=headers, timeout=timeout)
@@ -87,29 +103,29 @@ def fetch_company_json_retry(
     timeout: int = 30,
 ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
     """
-    Retry wrapper for flaky network errors.
-    Returns (json, error_str).
+    Requête RNE avec retries sur erreurs réseau.
+    Retourne (json, erreur).
     """
     for attempt in range(1, retries + 1):
         try:
             js = fetch_company_json(session, token, siren, timeout=timeout)
             return js, None
         except requests.HTTPError as e:
-            # 4xx: usually not recoverable; return immediately
             status = e.response.status_code if e.response is not None else None
             return None, f"HTTP {status}: {str(e)}"
         except (requests.ConnectionError, requests.Timeout) as e:
-            # retryable
             if attempt == retries:
                 return None, f"NETWORK: {type(e).__name__}: {str(e)[:200]}"
             time.sleep(base_sleep * (2 ** (attempt - 1)))
         except Exception as e:
-            # unknown, treat as non-retryable
             return None, f"ERROR: {type(e).__name__}: {str(e)[:200]}"
     return None, "ERROR: unexpected retry loop end"
 
 
 def extract_survival_fields(company_json: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Extrait les champs utiles (dates, état, survival) depuis le JSON RNE.
+    """
     siren = company_json.get("siren")
 
     formality = company_json.get("formality", {}) if isinstance(company_json.get("formality"), dict) else {}
@@ -117,7 +133,6 @@ def extract_survival_fields(company_json: Dict[str, Any]) -> Dict[str, Any]:
 
     date_creation = parse_date_loose(get_in(content, ["natureCreation", "dateCreation"]))
 
-    # Determine person block
     person_block = None
     if isinstance(content.get("personneMorale"), dict):
         person_block = "personneMorale"
@@ -126,15 +141,12 @@ def extract_survival_fields(company_json: Dict[str, Any]) -> Dict[str, Any]:
     elif isinstance(content.get("exploitation"), dict):
         person_block = "exploitation"
 
-    dce = None
-    if person_block:
-        dce = get_in(content, [person_block, "detailCessationEntreprise"])
+    dce = get_in(content, [person_block, "detailCessationEntreprise"]) if person_block else None
 
     date_cessation = None
     cessation_source = None
 
     if isinstance(dce, dict):
-        # IMPORTANT: on inclut dateRadiation (observé dans tes exemples)
         candidates = [
             ("dateRadiation", dce.get("dateRadiation")),
             ("dateCessationTotaleActivite", dce.get("dateCessationTotaleActivite")),
@@ -142,7 +154,7 @@ def extract_survival_fields(company_json: Dict[str, Any]) -> Dict[str, Any]:
             ("dateDissolutionDisparition", dce.get("dateDissolutionDisparition")),
             ("dateTransfertPatrimoine", dce.get("dateTransfertPatrimoine")),
             ("dateCessationActiviteSalariee", dce.get("dateCessationActiviteSalariee")),
-            ("dateMiseEnSommeil", dce.get("dateMiseEnSommeil")),  # signal faible
+            ("dateMiseEnSommeil", dce.get("dateMiseEnSommeil")),
         ]
         for k, v in candidates:
             v2 = parse_date_loose(v) if isinstance(v, str) else None
@@ -154,10 +166,7 @@ def extract_survival_fields(company_json: Dict[str, Any]) -> Dict[str, Any]:
     evenement_cessation = content.get("evenementCessation")
     nature_cessation = content.get("natureCessation")
 
-    if date_cessation:
-        etat_administratif = "CESSATION"
-        survival = 0
-    elif evenement_cessation or nature_cessation:
+    if date_cessation or evenement_cessation or nature_cessation:
         etat_administratif = "CESSATION"
         survival = 0
     else:
@@ -177,6 +186,9 @@ def extract_survival_fields(company_json: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def is_valid_siren(x: str) -> bool:
+    """
+    Valide un SIREN (9 chiffres).
+    """
     if not isinstance(x, str):
         return False
     x = x.strip()
@@ -184,14 +196,24 @@ def is_valid_siren(x: str) -> bool:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Enrich dataset with INPI RNE fields (survival, dates).")
-    parser.add_argument("--input", required=True, help="Input CSV containing startup_name + siren.")
-    parser.add_argument("--output", required=True, help="Output CSV path.")
-    parser.add_argument("--dump-json-dir", default="", help="If set, dump raw JSON responses (one file per siren).")
-    parser.add_argument("--limit", type=int, default=0, help="If >0, process only first N rows.")
-    parser.add_argument("--sleep", type=float, default=0.2, help="Pause between requests (seconds).")
-    parser.add_argument("--retries", type=int, default=3, help="Retries on network errors.")
-    parser.add_argument("--resume", action="store_true", help="Skip rows already filled with date_creation or survival.")
+    parser = argparse.ArgumentParser(
+        description="Enrichit un CSV avec les champs RNE (état administratif, dates, survival)."
+    )
+    parser.add_argument("--input", required=True, help="CSV en entrée (startup_name + siren).")
+    parser.add_argument("--output", required=True, help="Chemin du CSV en sortie.")
+    parser.add_argument(
+        "--dump-json-dir",
+        default="",
+        help="Si renseigné, sauvegarde les réponses JSON brutes (un fichier par siren).",
+    )
+    parser.add_argument("--limit", type=int, default=0, help="Si >0, traite uniquement les N premières lignes.")
+    parser.add_argument("--sleep", type=float, default=0.2, help="Pause entre requêtes (secondes).")
+    parser.add_argument("--retries", type=int, default=3, help="Retries sur erreurs réseau.")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Ignore les lignes déjà enrichies (date_creation ou survival déjà rempli).",
+    )
     args = parser.parse_args()
 
     load_dotenv()
@@ -199,7 +221,7 @@ def main():
     username = pick_env("INPI_USERNAME", "INPI_EMAIL")
     password = pick_env("INPI_PASSWORD")
     if not username or not password:
-        raise RuntimeError("INPI_EMAIL/INPI_PASSWORD manquants dans .env")
+        raise RuntimeError("INPI_EMAIL/INPI_PASSWORD manquants dans le fichier .env")
 
     df = pd.read_csv(args.input, dtype=str).fillna("")
     if "startup_name" not in df.columns or "siren" not in df.columns:
@@ -208,14 +230,25 @@ def main():
     if args.limit and args.limit > 0:
         df = df.head(args.limit).copy()
 
-    # Ensure output columns exist
-    for col in ["etat_administratif", "date_creation", "date_cessation", "cessation_source", "survival", "person_block", "rne_error"]:
+    for col in [
+        "etat_administratif",
+        "date_creation",
+        "date_cessation",
+        "cessation_source",
+        "survival",
+        "person_block",
+        "rne_error",
+    ]:
         if col not in df.columns:
             df[col] = ""
 
     dump_dir = args.dump_json_dir.strip()
     if dump_dir:
         os.makedirs(dump_dir, exist_ok=True)
+
+    out_dir = os.path.dirname(args.output)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
     with requests.Session() as session:
         token = login_get_token(session, username, password)
@@ -225,12 +258,10 @@ def main():
             startup_name = row.get("startup_name", "").strip()
             siren = row.get("siren", "").strip()
 
-            # Resume mode: if already has survival/date_creation, skip
             if args.resume and (row.get("survival", "").strip() or row.get("date_creation", "").strip()):
-                print(f"[{i+1}/{total}] SKIP (already enriched) {startup_name} ({siren})")
+                print(f"[{i+1}/{total}] SKIP (déjà enrichi) {startup_name} ({siren})")
                 continue
 
-            # Invalid siren -> skip call
             if not is_valid_siren(siren):
                 df.at[i, "etat_administratif"] = ""
                 df.at[i, "date_creation"] = ""
@@ -245,7 +276,9 @@ def main():
             print(f"[{i+1}/{total}] {startup_name} ({siren})")
 
             js, err = fetch_company_json_retry(
-                session, token, siren,
+                session,
+                token,
+                siren,
                 retries=args.retries,
                 base_sleep=1.0,
                 timeout=30,
@@ -272,13 +305,10 @@ def main():
 
             time.sleep(args.sleep)
 
-            # checkpoint every 25 rows
             if (i + 1) % 25 == 0:
-                os.makedirs(os.path.dirname(args.output), exist_ok=True)
                 df.to_csv(args.output, index=False, encoding="utf-8-sig")
                 print(f"Checkpoint saved ({i+1}/{total}): {args.output}")
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
     df.to_csv(args.output, index=False, encoding="utf-8-sig")
     print("Saved:", args.output)
 
