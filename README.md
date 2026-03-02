@@ -1,26 +1,119 @@
-Les commandes Anaconda Prompt :
+# Startup Survival & Patents
 
-cd chemin
-→ tu te places dans le dossier du projet pour exécuter les scripts.
+Projet de M2 – Analyse économétrique du lien entre innovation (brevets) et survie des startups French Cleantech.
 
+## Objectif
+
+Construire un pipeline complet permettant de :
+
+1. Scraper les startups depuis French Cleantech 
+2. Associer un SIREN via l’API publique recherche-entreprises 
+3. Récupérer les informations administratives INPI (RNE) 
+4. Extraire les portefeuilles de brevets via l’API INPI PI 
+5. Construire une base finale prête pour l’analyse économétrique 
+
+---
+
+## Structure du projet
+
+```
+data/
+  raw/
+  processed/
+
+src/
+  scrape_frenchcleantech_all.py
+  build_master_dataset.py
+  lookup_siren.py
+  inpi_rne_survival.py
+  inpi_pi_patents_portfolio.py
+  build_final_dataset.py
+
+notebooks/
+  Projet_tuteuré_code_analyse.ipynb
+```
+
+---
+
+## Prérequis
+
+- Python 3.10+
+- Compte INPI (RNE + API PI)
+- Accès API activé
+
+Installer les dépendances :
+
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## Configuration
+
+Créer un fichier `.env` à la racine du projet :
+
+```
+INPI_EMAIL=your_email
+INPI_PASSWORD=your_password
+
+INPI_PI_EMAIL=your_email
+INPI_PI_PASSWORD=your_password
+```
+
+---
+
+## Exécution du pipeline
+
+Depuis le dossier du projet :
+
+```bash
+cd C:\Users\...\startup-patents-survival
+```
+
+1. Scraping
+
+```bash
 python src\scrape_frenchcleantech_all.py --max-page 0 --sleep 0.6
-→ scrape toutes les entreprises du site FrenchCleantech (pages) et génère un CSV brut dans data/raw/.
+```
 
-python -c "import pandas as pd; df=pd.read_csv('data/raw/frenchcleantech_all_companies.csv'); print(df.shape); print(df.columns.tolist()); print(df.head(3))"
-→ vérifie rapidement (shape / colonnes / premières lignes) que le scraping a bien produit un fichier cohérent.
+2. Construction master
 
+```bash
 python src\build_master_dataset.py
-→ nettoie/structure la base brute pour créer un master prêt à enrichissement.
+```
 
-python src\lookup_siren.py --input data\processed\frenchcleantech_master.csv --output data\processed\frenchcleantech_master_siren.csv --sleep 0.3 --limit 5
-→ pour chaque startup, interroge l’API publique recherche-entreprises.api.gouv.fr pour retrouver un SIREN (clé pivot entreprise).
+3. Recherche SIREN
 
+```bash
+python src\lookup_siren.py --input data\processed\frenchcleantech_master.csv --output data\processed\frenchcleantech_master_siren.csv
+```
+
+4. Enrichissement RNE
+
+```bash
 python src\inpi_rne_survival.py --input data\processed\frenchcleantech_master_siren.csv --output data\processed\frenchcleantech_master_rne.csv
-→ pour chaque SIREN trouvé, interroge INPI/RNE pour récupérer des infos admin (statut, création, cessation) et dériver la variable survival.
+```
 
+5. Extraction brevets
+
+```bash
 python src\inpi_pi_patents_portfolio.py --input data\processed\frenchcleantech_master_rne.csv --output data\processed\frenchcleantech_master_rne_patents.csv --sleep 2.0 --checkpoint-every 25 --resume
-→ pour chaque SIREN, interroge INPI PI pour récupérer patents_total, en sauvegardant régulièrement et en pouvant reprendre après quota/erreur.
+```
 
+6. Base finale
+
+```bash
 python src\build_final_dataset.py
-→ fusion finale (master_rne + patents checkpoint), nettoyage des colonnes, calcul has_patent, création patents_status, export final dans data/raw/.
+```
 
+---
+
+## Reproductibilité
+
+Les dossiers `data/raw` et `data/processed` sont volontairement exclus du dépôt. 
+La base peut être reconstruite intégralement en exécutant le pipeline ci-dessus avec des identifiants INPI valides.
+
+---
+
+Projet réalisé dans le cadre du Master 2 – CMI D3S IES
