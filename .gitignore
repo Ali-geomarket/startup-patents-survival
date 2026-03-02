@@ -26,3 +26,10 @@ Thumbs.db
 # R
 .Rhistory
 .RData
+
+# Local auth / API payloads (DO NOT COMMIT)
+login.json
+payload.json
+cookie.txt
+*.token
+*.jwt
