@@ -12,7 +12,9 @@ HEADERS = {"User-Agent": "startup-patents-survival/1.0"}
 
 
 def search_company(name: str, limit: int = 5) -> dict:
-    """Query the public 'API Recherche d’Entreprises' and return JSON results."""
+    """
+    Interroge l'API Recherche d’Entreprises et retourne le JSON.
+    """
     if not isinstance(name, str) or not name.strip():
         return {"results": []}
 
@@ -25,9 +27,7 @@ def search_company(name: str, limit: int = 5) -> dict:
 
 def pick_best_result(results: list) -> dict:
     """
-    Heuristique baseline:
-    - si vide -> {}
-    - sinon -> premier résultat (souvent correct si query bien nettoyée)
+    Sélection simple : prend le premier résultat si présent.
     """
     if not results:
         return {}
@@ -36,13 +36,21 @@ def pick_best_result(results: list) -> dict:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Enrich master dataset with SIREN using recherche-entreprises.api.gouv.fr"
+        description="Enrichit un master CSV avec le SIREN via recherche-entreprises.api.gouv.fr"
     )
-    parser.add_argument("--input", required=True, help="Input master CSV (must contain startup_name, name_clean_v2).")
-    parser.add_argument("--output", required=True, help="Output master CSV enriched with SIREN.")
-    parser.add_argument("--sleep", type=float, default=0.25, help="Delay between requests (seconds).")
-    parser.add_argument("--limit", type=int, default=5, help="Number of API results to fetch per query.")
-    parser.add_argument("--resume", action="store_true", help="Skip rows that already have a siren (resume mode).")
+    parser.add_argument(
+        "--input",
+        required=True,
+        help="CSV en entrée (doit contenir startup_name, name_clean_v2).",
+    )
+    parser.add_argument(
+        "--output",
+        required=True,
+        help="CSV en sortie enrichi (SIREN, SIRET, NAF, etc.).",
+    )
+    parser.add_argument("--sleep", type=float, default=0.25, help="Pause entre requêtes (secondes).")
+    parser.add_argument("--limit", type=int, default=5, help="Nombre de résultats récupérés par requête.")
+    parser.add_argument("--resume", action="store_true", help="Ignore les lignes qui ont déjà un SIREN.")
     args = parser.parse_args()
 
     df = pd.read_csv(args.input, dtype=str).fillna("")
@@ -50,29 +58,39 @@ def main():
     required = {"startup_name", "name_clean_v2"}
     missing = required - set(df.columns)
     if missing:
-        raise ValueError(f"Input CSV missing columns: {sorted(missing)}")
+        raise ValueError(f"Colonnes manquantes dans le CSV : {sorted(missing)}")
 
-    # Assure colonnes target existent
-    for col in ["siren", "siret", "denomination", "naf", "match_score", "match_status", "match_query", "match_error"]:
+    for col in [
+        "siren",
+        "siret",
+        "denomination",
+        "naf",
+        "match_score",
+        "match_status",
+        "match_query",
+        "match_error",
+    ]:
         if col not in df.columns:
             df[col] = ""
 
     total = len(df)
 
+    out_dir = os.path.dirname(args.output)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
+
     for i, row in df.iterrows():
         startup_name = row.get("startup_name", "")
         name_clean_v2 = row.get("name_clean_v2", "")
 
-        # mode reprise
         if args.resume and str(row.get("siren", "")).strip():
-            print(f"[{i+1}/{total}] SKIP (has siren): {startup_name}")
+            print(f"[{i+1}/{total}] SKIP (déjà un SIREN) : {startup_name}")
             continue
 
-        # query prioritaire : name_clean_v2, sinon startup_name
         query = name_clean_v2.strip() or startup_name.strip()
         df.at[i, "match_query"] = query
 
-        print(f"[{i+1}/{total}] Searching: {startup_name} | query='{query}'")
+        print(f"[{i+1}/{total}] Recherche : {startup_name} | query='{query}'")
 
         try:
             data = search_company(query, limit=args.limit)
@@ -91,7 +109,8 @@ def main():
                 df.at[i, "siret"] = best.get("siret", "") or ""
                 df.at[i, "denomination"] = best.get("nom_raison_sociale", best.get("denomination", "")) or ""
                 df.at[i, "naf"] = best.get("naf", "") or ""
-                df.at[i, "match_score"] = str(best.get("score", "")) if best.get("score", "") != "" else ""
+                score = best.get("score", "")
+                df.at[i, "match_score"] = str(score) if score != "" else ""
                 df.at[i, "match_status"] = "OK"
 
             df.at[i, "match_error"] = ""
@@ -99,7 +118,6 @@ def main():
         except Exception as e:
             df.at[i, "match_status"] = "ERROR"
             df.at[i, "match_error"] = str(e)[:500]
-            # on vide les champs en cas d'erreur
             df.at[i, "siren"] = ""
             df.at[i, "siret"] = ""
             df.at[i, "denomination"] = ""
@@ -108,15 +126,13 @@ def main():
 
         time.sleep(args.sleep)
 
-        # sauvegarde progressive (sécurité)
         if (i + 1) % 25 == 0:
-            os.makedirs(os.path.dirname(args.output), exist_ok=True)
             df.to_csv(args.output, index=False, encoding="utf-8-sig")
-            print(f"Checkpoint saved ({i+1}/{total}): {args.output}")
+            print(f"Checkpoint saved ({i+1}/{total}) : {args.output}")
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
     df.to_csv(args.output, index=False, encoding="utf-8-sig")
-    print("Saved:", args.output, "| rows:", len(df), "| OK:", (df["match_status"] == "OK").sum())
+    ok_count = (df["match_status"] == "OK").sum() if "match_status" in df.columns else 0
+    print("Saved:", args.output, "| rows:", len(df), "| OK:", ok_count)
 
 
 if __name__ == "__main__":
