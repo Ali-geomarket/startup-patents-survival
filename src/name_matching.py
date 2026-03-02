@@ -9,35 +9,36 @@ import pandas as pd
 LEGAL_FORMS = {
     "SAS", "SASU", "SARL", "SA", "SNC", "EURL", "GIE",
     "LTD", "LIMITED", "INC", "CORP", "CORPORATION",
-    "BV", "GMBH", "SPA", "SRL"
+    "BV", "GMBH", "SPA", "SRL",
 }
 
 COMMON_TOKENS = {
     "GROUPE", "GROUP", "HOLDING", "FRANCE", "INTERNATIONAL", "INTL",
-    "COMPANY", "CO", "SOC", "SOCIETE", "ET", "ETABLISSEMENTS"
+    "COMPANY", "CO", "SOC", "SOCIETE", "ET", "ETABLISSEMENTS",
 }
 
 
 def strip_accents(s: str) -> str:
+    """
+    Supprime les accents d'une chaîne.
+    """
     s = unicodedata.normalize("NFKD", s)
     return "".join(c for c in s if not unicodedata.combining(c))
 
 
 def normalize_company_name(name: str) -> str:
     """
-    Normalisation standard pour noms d'entreprises :
-    - uppercase
-    - suppression accents
-    - suppression ponctuation
-    - suppression formes juridiques
-    - suppression tokens très fréquents
+    Normalise un nom d'entreprise :
+    - majuscules, accents supprimés
+    - ponctuation remplacée par des espaces
+    - suppression des formes juridiques et tokens très fréquents
     """
     if not isinstance(name, str):
         return ""
 
     x = name.upper().strip()
     x = strip_accents(x)
-    x = re.sub(r"[^A-Z0-9]", " ", x)      # garder lettres/chiffres
+    x = re.sub(r"[^A-Z0-9]", " ", x)
     x = re.sub(r"\s+", " ", x).strip()
 
     tokens = []
@@ -53,8 +54,7 @@ def normalize_company_name(name: str) -> str:
 
 def similarity(a: str, b: str) -> float:
     """
-    Similarité simple entre deux chaînes normalisées.
-    Retourne un score entre 0 et 1.
+    Calcule une similarité (0 à 1) entre deux chaînes.
     """
     if not a or not b:
         return 0.0
@@ -62,27 +62,28 @@ def similarity(a: str, b: str) -> float:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Test basic name normalization and similarity.")
-    parser.add_argument("--input", required=True, help="CSV containing a column startup_name.")
-    parser.add_argument("--col", default="startup_name", help="Column name containing company names.")
-    parser.add_argument("--n", type=int, default=10, help="Number of rows to preview.")
+    parser = argparse.ArgumentParser(
+        description="Teste une normalisation simple de noms d'entreprises et un score de similarité."
+    )
+    parser.add_argument("--input", required=True, help="CSV en entrée contenant une colonne de noms.")
+    parser.add_argument("--col", default="startup_name", help="Nom de la colonne contenant les noms.")
+    parser.add_argument("--n", type=int, default=10, help="Nombre de lignes à afficher.")
 
     args = parser.parse_args()
 
     df = pd.read_csv(args.input)
 
     if args.col not in df.columns:
-        raise ValueError(f"Column '{args.col}' not found in input CSV.")
+        raise ValueError(f"Colonne '{args.col}' introuvable dans le CSV.")
 
     df["name_normalized"] = df[args.col].apply(normalize_company_name)
 
     print(df[[args.col, "name_normalized"]].head(args.n).to_string(index=False))
 
-    # Petit test de similarité sur les 2 premières lignes si possible
     if len(df) >= 2:
         a = df.loc[0, "name_normalized"]
         b = df.loc[1, "name_normalized"]
-        print("\nExample similarity between first two normalized names:")
+        print("\nExemple de similarité entre les deux premiers noms normalisés :")
         print(f"  1) {a}")
         print(f"  2) {b}")
         print(f"  score = {similarity(a, b):.3f}")
