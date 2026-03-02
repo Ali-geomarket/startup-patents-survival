@@ -24,10 +24,10 @@ UA_HEADERS_BASE = {
 }
 
 
-# ----------------------------
-# Session / Utils
-# ----------------------------
 def make_session(retries: int = 5, backoff: float = 0.8) -> requests.Session:
+    """
+    Crée une session Requests avec retry sur erreurs réseau et HTTP 5xx.
+    """
     s = requests.Session()
     retry = Retry(
         total=retries,
@@ -35,7 +35,7 @@ def make_session(retries: int = 5, backoff: float = 0.8) -> requests.Session:
         read=retries,
         status=retries,
         backoff_factor=backoff,
-        status_forcelist=(500, 502, 503, 504),  # 429 géré à la main
+        status_forcelist=(500, 502, 503, 504),
         allowed_methods=("GET", "POST"),
         raise_on_status=False,
     )
@@ -46,14 +46,23 @@ def make_session(retries: int = 5, backoff: float = 0.8) -> requests.Session:
 
 
 def dns_precheck(host: str = API_HOST) -> str:
+    """
+    Vérifie que le host est résolu par DNS.
+    """
     return socket.gethostbyname(host)
 
 
 def is_valid_siren(x: str) -> bool:
+    """
+    Valide un SIREN (9 chiffres).
+    """
     return isinstance(x, str) and x.isdigit() and len(x) == 9
 
 
 def get_xsrf(session: requests.Session) -> str:
+    """
+    Récupère le token XSRF depuis les cookies de session.
+    """
     xsrf = session.cookies.get("XSRF-TOKEN")
     if not xsrf:
         raise RuntimeError("Cookie XSRF-TOKEN introuvable (session invalide ou login non fait).")
@@ -61,6 +70,9 @@ def get_xsrf(session: requests.Session) -> str:
 
 
 def build_cookie_header(session: requests.Session) -> Optional[str]:
+    """
+    Construit le header Cookie attendu par l'API (selon cookies présents).
+    """
     xsrf = session.cookies.get("XSRF-TOKEN")
     access_token = session.cookies.get("access_token")
     session_token = session.cookies.get("session_token")
@@ -80,6 +92,9 @@ def build_cookie_header(session: requests.Session) -> Optional[str]:
 
 
 def build_headers(session: requests.Session) -> Dict[str, str]:
+    """
+    Construit les headers nécessaires pour les appels POST (dont XSRF + cookies).
+    """
     xsrf = get_xsrf(session)
     h = dict(UA_HEADERS_BASE)
     h["content-type"] = "application/json"
@@ -89,12 +104,14 @@ def build_headers(session: requests.Session) -> Dict[str, str]:
     if ck:
         h["Cookie"] = ck
 
-    # Important: limiter le “collage” à un noeud LB
     h["Connection"] = "close"
     return h
 
 
 def is_quota_429(resp: requests.Response) -> bool:
+    """
+    Détecte un 429 lié au quota (et pas un autre cas).
+    """
     if resp.status_code != 429:
         return False
     txt = (resp.text or "").lower()
@@ -102,6 +119,9 @@ def is_quota_429(resp: requests.Response) -> bool:
 
 
 def get_retry_after_seconds(resp: requests.Response) -> int:
+    """
+    Lit Retry-After si présent, sinon retourne 0.
+    """
     ra = resp.headers.get("Retry-After")
     if not ra:
         return 0
@@ -111,17 +131,22 @@ def get_retry_after_seconds(resp: requests.Response) -> int:
         return 0
 
 
-def safe_atomic_csv_save(df: pd.DataFrame, out_path: str, retries: int = 5, sleep_s: float = 2.0) -> None:
+def safe_atomic_csv_save(
+    df: pd.DataFrame,
+    out_path: str,
+    retries: int = 5,
+    sleep_s: float = 2.0,
+) -> None:
     """
-    Écriture robuste Windows/Excel:
-    - écrit dans un .tmp
-    - remplace le fichier final
-    - retry si PermissionError (CSV ouvert)
+    Sauvegarde atomique (Windows/Excel) : écrit dans un .tmp puis remplace le fichier final.
     """
-    os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    tmp_path = out_path + ".tmp"
+    out_dir = os.path.dirname(out_path)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
+    tmp_path = out_path + ".tmp"
     last_err = None
+
     for _ in range(retries):
         try:
             df.to_csv(tmp_path, index=False, encoding="utf-8-sig")
@@ -134,7 +159,6 @@ def safe_atomic_csv_save(df: pd.DataFrame, out_path: str, retries: int = 5, slee
             last_err = e
             break
 
-    # nettoyage tmp si possible
     try:
         if os.path.exists(tmp_path):
             os.remove(tmp_path)
@@ -144,18 +168,16 @@ def safe_atomic_csv_save(df: pd.DataFrame, out_path: str, retries: int = 5, slee
     raise last_err
 
 
-# ----------------------------
-# Auth
-# ----------------------------
 def pi_authenticate_and_login(session: requests.Session, email: str, password: str) -> None:
-    # 1) authenticate (peut répondre 401 mais pose XSRF-TOKEN)
+    """
+    Initialise la session INPI PI (authenticate puis login).
+    """
     r1 = session.get(UAA_AUTHENTICATE, headers=UA_HEADERS_BASE, timeout=30)
     if r1.status_code >= 400 and r1.status_code != 401:
         raise RuntimeError(f"[authenticate] HTTP {r1.status_code} body={r1.text[:500]}")
 
     _ = get_xsrf(session)
 
-    # 2) login
     payload = {"username": email, "password": password, "rememberMe": True}
     r2 = session.post(
         AUTH_LOGIN,
@@ -167,13 +189,12 @@ def pi_authenticate_and_login(session: requests.Session, email: str, password: s
         raise RuntimeError(f"[login] HTTP {r2.status_code} body={r2.text[:800]}")
 
 
-# ----------------------------
-# Patents search (POST only)
-# ----------------------------
 def _post_search(session: requests.Session, siren: str, size: int, position: int) -> requests.Response:
-    collections = ["FR", "EP", "CCP"]
+    """
+    Envoie la requête POST de recherche brevets pour un SIREN.
+    """
     body = {
-        "collections": collections,
+        "collections": ["FR", "EP", "CCP"],
         "query": f"[TISI={siren}]",
         "size": size,
         "position": position,
@@ -189,12 +210,11 @@ def search_patents_count_post_only(
     position: int = 0,
 ) -> Tuple[Optional[int], str, Optional[requests.Response]]:
     """
-    Retourne (count, status, resp)
-      - status = ok | quota | need_reset | http_error | parse_error
+    Retourne (count, status, resp).
+    status = ok | quota | need_reset | http_error | parse_error
     """
     r = _post_search(session, siren, size=size, position=position)
 
-    # CSRF invalide -> refresh authenticate puis retry 1 fois
     if r.status_code == 403 and "Invalid CSRF Token" in (r.text or ""):
         session.get(UAA_AUTHENTICATE, headers=UA_HEADERS_BASE, timeout=30)
         r = _post_search(session, siren, size=size, position=position)
@@ -202,7 +222,6 @@ def search_patents_count_post_only(
     if is_quota_429(r):
         return None, "quota", r
 
-    # Le point clé: 405 = noeud LB qui refuse POST => reset session
     if r.status_code == 405:
         return None, "need_reset", r
 
@@ -214,19 +233,16 @@ def search_patents_count_post_only(
         md = data.get("metadata", {}) if isinstance(data, dict) else {}
         if isinstance(md, dict) and md.get("count") is not None:
             return int(md["count"]), "ok", r
+
         results = data.get("results", []) if isinstance(data, dict) else []
         return int(len(results)), "ok", r
     except Exception:
         return None, "parse_error", r
 
 
-# ----------------------------
-# IO: resume robuste
-# ----------------------------
 def load_dataframe(input_path: str, output_path: str, resume: bool) -> pd.DataFrame:
     """
-    - Si resume ET output existe: on repart de output (on ne perd jamais patents_total déjà calculés)
-    - Sinon: on part de input
+    Si resume et output existe : repart du fichier output, sinon du fichier input.
     """
     base_path = output_path if (resume and os.path.exists(output_path)) else input_path
     df = pd.read_csv(base_path, dtype=str).fillna("")
@@ -235,14 +251,11 @@ def load_dataframe(input_path: str, output_path: str, resume: bool) -> pd.DataFr
     return df
 
 
-# ----------------------------
-# Main
-# ----------------------------
 def main():
     load_dotenv(".env")
 
     parser = argparse.ArgumentParser(
-        description="INPI PI - patents count for a list of SIREN (POST only + resume-safe + robust checkpoints)."
+        description="INPI PI : récupère le nombre de brevets par SIREN (POST only + reprise + checkpoints)."
     )
     parser.add_argument("--input", required=True)
     parser.add_argument("--output", required=True)
@@ -250,28 +263,41 @@ def main():
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--checkpoint-every", type=int, default=25)
     parser.add_argument("--limit", type=int, default=0)
-    parser.add_argument("--wait-on-429", action="store_true",
-                        help="Attend et reprend sur HTTP 429 au lieu d'arrêter.")
-    parser.add_argument("--wait-429-default", type=int, default=1800,
-                        help="Temps d'attente (s) si Retry-After absent (défaut 1800=30min).")
-    parser.add_argument("--max-resets-per-row", type=int, default=2,
-                        help="Nombre de resets session max sur une ligne en erreur 405/etc.")
+    parser.add_argument(
+        "--wait-on-429",
+        action="store_true",
+        help="Attend et reprend sur HTTP 429 au lieu d'arrêter.",
+    )
+    parser.add_argument(
+        "--wait-429-default",
+        type=int,
+        default=1800,
+        help="Temps d'attente (s) si Retry-After absent (défaut : 1800).",
+    )
+    parser.add_argument(
+        "--max-resets-per-row",
+        type=int,
+        default=2,
+        help="Nombre max de resets session sur une même ligne (ex : erreur 405).",
+    )
     args = parser.parse_args()
 
     email = os.getenv("INPI_PI_EMAIL")
     password = os.getenv("INPI_PI_PASSWORD")
     if not email or not password:
-        raise RuntimeError("INPI_PI_EMAIL / INPI_PI_PASSWORD manquants dans .env")
+        raise RuntimeError("INPI_PI_EMAIL / INPI_PI_PASSWORD manquants dans le fichier .env")
 
     ip = dns_precheck(API_HOST)
     print(f"DNS OK: {API_HOST} -> {ip}")
 
-    os.makedirs(os.path.dirname(args.output), exist_ok=True)
+    out_dir = os.path.dirname(args.output)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
     df = load_dataframe(args.input, args.output, resume=args.resume)
 
     if "siren" not in df.columns or "startup_name" not in df.columns:
-        raise RuntimeError("Le CSV doit contenir au moins: siren, startup_name (et idéalement patents_total).")
+        raise RuntimeError("Le CSV doit contenir au moins : siren, startup_name (et idéalement patents_total).")
 
     if args.limit and args.limit > 0:
         df = df.head(args.limit).copy()
@@ -299,7 +325,6 @@ def main():
             siren = (row.get("siren") or "").strip()
             current_val = str(row.get("patents_total", "")).strip()
 
-            # resume skip
             if args.resume and current_val != "":
                 print(f"[{i+1}/{total}] SKIP {name} ({siren})")
                 continue
@@ -320,7 +345,6 @@ def main():
                     break
 
                 if status == "quota":
-                    # checkpoint immédiat avant stop/attente
                     safe_atomic_csv_save(df, args.output)
                     print("Saved checkpoint:", args.output)
 
@@ -338,19 +362,19 @@ def main():
                     resets = 0
                     continue
 
-                # need_reset / http_error / parse_error
                 if resp is not None:
                     allow = resp.headers.get("Allow", "")
-                    print(f"  -> ERROR: status={resp.status_code} allow={allow} url={resp.url} body={resp.text[:160]}")
+                    print(
+                        f"  -> ERROR: status={resp.status_code} allow={allow} url={resp.url} body={resp.text[:160]}"
+                    )
                 else:
-                    print("  -> ERROR: unknown response")
+                    print("  -> ERROR: réponse inconnue")
 
                 if resets < args.max_resets_per_row:
                     resets += 1
                     reset_session()
                     continue
 
-                # abandonne la ligne (sera retentée plus tard si tu veux)
                 df.at[i, "patents_total"] = ""
                 break
 
