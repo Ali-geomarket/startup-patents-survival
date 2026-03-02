@@ -4,29 +4,31 @@ import pandas as pd
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Build master dataset from FrenchCleantech scraped companies.")
+    parser = argparse.ArgumentParser(
+        description="Construit le dataset master à partir du scraping FrenchCleantech."
+    )
     parser.add_argument(
         "--input",
         default=os.path.join("data", "raw", "frenchcleantech_all_companies.csv"),
-        help="Input CSV (default: data/raw/frenchcleantech_all_companies.csv)",
+        help="CSV en entrée (par défaut : data/raw/frenchcleantech_all_companies.csv)",
     )
     parser.add_argument(
         "--output",
         default=os.path.join("data", "processed", "frenchcleantech_master.csv"),
-        help="Output CSV (default: data/processed/frenchcleantech_master.csv)",
+        help="CSV en sortie (par défaut : data/processed/frenchcleantech_master.csv)",
     )
     args = parser.parse_args()
 
     df = pd.read_csv(args.input, dtype=str).fillna("")
 
-    # Dédup robuste : priorité au name_clean_v2, sinon detail_url
+    # Déduplication sur name_clean_v2 (une ligne par startup)
     df = (
         df.sort_values(["category", "list_page"], ascending=True)
-          .drop_duplicates(subset=["name_clean_v2"], keep="first")
-          .reset_index(drop=True)
+        .drop_duplicates(subset=["name_clean_v2"], keep="first")
+        .reset_index(drop=True)
     )
 
-    # Colonnes "master" + placeholders pour la suite du pipeline
+    # Ajoute les colonnes nécessaires aux étapes suivantes du pipeline
     out = df.copy()
     for col in [
         "siren",
