@@ -6,13 +6,10 @@ import argparse
 import pandas as pd
 
 
-# ----------------------------
-# Helpers
-# ----------------------------
 def detect_separator(path: str, encoding: str = "utf-8-sig") -> str:
     """
-    Détecte grossièrement le séparateur principal entre ',' et ';'
-    en regardant le header + quelques lignes.
+    Détecte le séparateur principal entre ',' et ';'
+    à partir du header et de quelques lignes.
     """
     with open(path, "r", encoding=encoding, errors="replace") as f:
         sample = f.read(50_000)
@@ -24,10 +21,10 @@ def detect_separator(path: str, encoding: str = "utf-8-sig") -> str:
 
 def safe_read_csv(path: str, dtype=str) -> pd.DataFrame:
     """
-    Lecture robuste:
-    - détecte sep ',' vs ';'
-    - engine=python (plus tolérant)
-    - on_bad_lines='skip' pour éviter crash si une ligne est cassée
+    Lecture robuste d'un CSV :
+    - détection automatique du séparateur
+    - gestion de plusieurs encodages
+    - ignore les lignes corrompues
     """
     for enc in ("utf-8-sig", "utf-8", "cp1252"):
         try:
@@ -56,6 +53,9 @@ def safe_read_csv(path: str, dtype=str) -> pd.DataFrame:
 
 
 def to_int_or_na(x):
+    """
+    Convertit une valeur en entier ou retourne NA si invalide.
+    """
     x = "" if x is None else str(x).strip()
     if x == "" or x.lower() == "nan":
         return pd.NA
@@ -65,12 +65,9 @@ def to_int_or_na(x):
         return pd.NA
 
 
-# ----------------------------
-# Main
-# ----------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Build final dataset from master_rne + patents checkpoint (robust)."
+        description="Construction du dataset final à partir du master RNE et des brevets."
     )
     parser.add_argument("--master", default="data/processed/frenchcleantech_master_rne.csv")
     parser.add_argument("--patents", default="data/processed/frenchcleantech_master_rne_patents.csv")
@@ -81,11 +78,10 @@ def main():
     patents = safe_read_csv(args.patents, dtype=str)
 
     if "siren" not in master.columns:
-        raise RuntimeError("master file must contain column: siren")
+        raise RuntimeError("Le fichier master doit contenir la colonne : siren")
     if "siren" not in patents.columns:
-        raise RuntimeError("patents file must contain column: siren")
+        raise RuntimeError("Le fichier patents doit contenir la colonne : siren")
 
-    # Sécuriser patents_total
     if "patents_total" not in patents.columns:
         patents["patents_total"] = ""
 
@@ -94,7 +90,6 @@ def main():
     patents_small["patents_total_num"] = patents_small["patents_total"].apply(to_int_or_na)
     patents_small = patents_small.drop_duplicates(subset=["siren"], keep="first")
 
-    # Merge SAFE (left join) => nombre de lignes inchangé
     before_rows = len(master)
     master["siren"] = master["siren"].astype(str).str.strip()
 
@@ -105,20 +100,17 @@ def main():
     )
 
     if len(df) != before_rows:
-        raise RuntimeError(f"Merge changed row count: before={before_rows} after={len(df)}")
+        raise RuntimeError(
+            f"Le merge a modifié le nombre de lignes : avant={before_rows}, après={len(df)}"
+        )
 
-    # Normalisation
     df["patents_total"] = df["patents_total_num"]
     df = df.drop(columns=["patents_total_num"], errors="ignore")
 
-    # has_patent (NA si patents_total manquant)
     df["has_patent"] = df["patents_total"].apply(
         lambda v: pd.NA if pd.isna(v) else (1 if int(v) > 0 else 0)
     )
 
-    # ----------------------------
-    # match_status binaire (OK => 1, sinon => 0)
-    # ----------------------------
     if "match_status" in df.columns:
         df["match_found"] = (
             df["match_status"]
@@ -131,9 +123,6 @@ def main():
     else:
         df["match_found"] = pd.NA
 
-    # ----------------------------
-    # Nettoyage colonnes
-    # ----------------------------
     cols_to_drop = [
         "match_score",
         "rne_etat_administratif",
@@ -152,7 +141,6 @@ def main():
     ]
     df = df.drop(columns=[c for c in cols_to_drop if c in df.columns], errors="ignore")
 
-    # Optionnel: réordonner les colonnes (lisible)
     preferred_order = [
         "startup_name",
         "tagline",
@@ -173,7 +161,6 @@ def main():
     remaining = [c for c in df.columns if c not in preferred_order]
     df = df[[c for c in preferred_order if c in df.columns] + remaining]
 
-    # Save dans raw
     out_dir = os.path.dirname(args.out)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
